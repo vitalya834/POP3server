@@ -1,0 +1,14 @@
+﻿  Letter.cpp
+  Mailbox.cpp
+c:\users\vital\source\repos\project21\project21\headers\mailbox.h(26): warning C4018: <: несоответствие типов со знаком и без знака
+  MailHandler.cpp
+c:\users\vital\source\repos\project21\project21\headers\mailbox.h(26): warning C4018: <: несоответствие типов со знаком и без знака
+c:\users\vital\source\repos\project21\project21\mailhandler.cpp(274): warning C4018: <: несоответствие типов со знаком и без знака
+  main.cpp
+c:\users\vital\source\repos\project21\project21\headers\mailbox.h(26): warning C4018: <: несоответствие типов со знаком и без знака
+  User.cpp
+c:\users\vital\source\repos\project21\project21\headers\mailbox.h(26): warning C4018: <: несоответствие типов со знаком и без знака
+  util.cpp
+  Создание кода...
+c:\users\vital\source\repos\project21\project21\mailhandler.cpp(79): warning C4715: MailHandler::clientHandler: значение возвращается не при всех путях выполнения
+  Project21.vcxproj -> C:\Users\vital\source\repos\Project21\Debug\Project21.exe

@@ -1,0 +1,3 @@
+﻿  main.cpp
+c:\users\vital\source\repos\project21\project21\headers\mailbox.h(20): warning C4267: return: преобразование из "size_t" в "int"; возможна потеря данных
+  Project21.vcxproj -> C:\Users\vital\source\repos\Project21\x64\Debug\Project21.exe
