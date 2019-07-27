@@ -44,9 +44,6 @@
     <ClInclude Include="headers\MailHandler.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
-    <ClInclude Include="headers\Responses.h">
-      <Filter>Файлы заголовков</Filter>
-    </ClInclude>
     <ClInclude Include="headers\User.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>

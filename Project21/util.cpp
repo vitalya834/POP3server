@@ -1,55 +1,48 @@
 #include "headers/util.h"
 
-int recvn(SOCKET fd, char *bp, size_t len) {
-	return recv(fd, bp, len, MSG_WAITALL);
-}
-
-int sendn(SOCKET s, char* buf, int lenbuf, int flags) {
-	int bytesSended = 0; //
-	int n; //
-	while (bytesSended < lenbuf)  {
-		n = send(s, buf + bytesSended, lenbuf - bytesSended, flags);
-		if (n < 0) {
-			cout << ("Error with send in sendn\n");
-			break;
+int sendAll(SOCKET sock, const char *buf, int len) {
+	int total = 0;
+	while (total < len) {
+		int n = send(sock, buf + total, len - total, 0);
+		if (n == SOCKET_ERROR) {
+			return -1;
 		}
-		bytesSended += n;
+		total += n;
 	}
-	return (n == -1 ? -1 : bytesSended);
+	return total;
 }
 
-int recvLine(SOCKET sock, char* buffer, int buffSize) { //функция приема сообщения 
-	char* buff = buffer; //указатель на начало внешнего буфера 
-	char* currPosPointer= buffer; //указатель для работы со временным буфером 
-	int count = 0; //число прочитанных символов (без удаления из буфера сокета) 
-	char tempBuf[100]; //временный буфер для приема
-	char currChar; //текущий анализируемый символ (ищем разделитель)
-	int tmpcount = 0;
-	while (--buffSize > 0){
-		if (--count <= 0) {
-			recvn(sock, tempBuf, tmpcount);
-			count = recv(sock, tempBuf, sizeof (tempBuf), MSG_PEEK);
-			if (count <= 0) { return count; }
-			currPosPointer = tempBuf;
-			tmpcount = count;
+// A single blocking recv() per byte keeps the reader trivially correct:
+// nothing is read past the line terminator, so consecutive commands are
+// never swallowed. Fine for an educational server.
+int recvLine(SOCKET sock, std::string &line) {
+	line.clear();
+	char ch;
+	for (;;) {
+		int n = recv(sock, &ch, 1, 0);
+		if (n == 0) {
+			return 0; // connection closed by peer
 		}
-		//currPosPointer++;
-		currChar = *currPosPointer++;
-		*buffer++ = currChar;
-		if (currChar == '\n') {
-			*(buffer - 1) = '\0';
-		recvn(sock, tempBuf, tmpcount - count + 1);
-			return buffer - buff - 1;
+		if (n == SOCKET_ERROR) {
+			return -1;
+		}
+		if (ch == '\n') {
+			if (!line.empty() && line.back() == '\r') {
+				line.pop_back();
+			}
+			return 1;
+		}
+		if (line.size() >= MAX_LINE_LEN) {
+			return -1; // line too long, treat as protocol error
+		}
+		line.push_back(ch);
 	}
-	}
-	return -1;
 }
 
-//отправка сообщения
-int sendLine(int sock, const char* str) {
-	char tempBuf[MAX_STR_LEN];
-	strcpy_s(tempBuf, str);
-	if (tempBuf[strlen(tempBuf) - 1] != '\n')
-		strcat_s(tempBuf, "\n");
-	return sendn(sock, tempBuf, strlen(tempBuf), 0);
+int sendLine(SOCKET sock, const std::string &text) {
+	std::string out = text;
+	if (out.size() < 2 || out.compare(out.size() - 2, 2, "\r\n") != 0) {
+		out += "\r\n";
+	}
+	return sendAll(sock, out.c_str(), (int)out.size());
 }

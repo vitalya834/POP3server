@@ -2,72 +2,51 @@
 #include <string>
 #include "headers/Mailbox.h"
 using namespace std;
+
 class User
 {
 public:
 	User();
-	User(const string& name, const string& pass);
+	User(const string &name, const string &pass);
 	~User();
-	string getName(){
+
+	string getName() const {
 		return userName;
 	}
 
-	string getPass(){
+	string getPass() const {
 		return password;
 	}
 
-	//добавление письма в ящик
-	void addLetter(const Letter& l){
+	Mailbox &mailbox(){
+		return box;
+	}
+
+	const Mailbox &mailbox() const {
+		return box;
+	}
+
+	void addLetter(const Letter &l){
 		box.addLetterToMailbox(l);
 	}
 
-	//удаление письма из ящика
-	void eraseLetter(int num){
-		box.eraseLetterFromMailbox(num);
+	// POP3 allows only one session per maildrop; PASS acquires the
+	// lock and QUIT (or a dropped connection) releases it.
+	bool isLocked() const {
+		return locked;
 	}
 
-	//возвращает количество писем в ящике у пользователя
-	int lettersCount(){
-		return box.returnCountOfLetters();
-	}
-	
-	//возвращает общий размер всех писем в ящике
-	int overallSize(){
-		return box.returnSizeOfAllLetters();
+	void lock(){
+		locked = true;
 	}
 
-	//возвращает размер кокретного письма
-	int letterSize(int i){
-		return box.returnSizeOfLetter(i);
-	}
-
-	//возвращает письмо
-	Letter getLetter(int i){
-		Letter l = Letter();
-		l = box.returnLetter(i);
-		return l;
-	}
-
-	void deleteLetter(int i){
-		box.setFlag(i,true);
-	}
-
-	void recoverLetter(int i){
-		box.setFlag(i,false);
-	}
-
-	void setOnline(){
-		isOnline = true;
-	}
-
-	void setOfline(){
-		isOnline = false;
+	void unlock(){
+		locked = false;
 	}
 
 private:
 	string userName;
 	string password;
 	Mailbox box;
-	bool isOnline;
+	bool locked;
 };
-

@@ -130,7 +130,6 @@
     <ClInclude Include="headers\Letter.h" />
     <ClInclude Include="headers\Mailbox.h" />
     <ClInclude Include="headers\MailHandler.h" />
-    <ClInclude Include="headers\Responses.h" />
     <ClInclude Include="headers\User.h" />
     <ClInclude Include="headers\util.h" />
   </ItemGroup>

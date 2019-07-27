@@ -1,284 +1,293 @@
 #include "headers/MailHandler.h"
-#include <fstream>
-#include<string.h>
+#include <iostream>
+#include <sstream>
 using namespace std;
+
+namespace {
+
+// Splits "RETR 1" into an upper-cased verb ("RETR") and the raw
+// argument string ("1"). Extra whitespace is trimmed.
+void parseCommand(const string &line, string &verb, string &arg) {
+	size_t sp = line.find(' ');
+	verb = line.substr(0, sp);
+	for (size_t i = 0; i < verb.size(); ++i) {
+		verb[i] = (char)toupper((unsigned char)verb[i]);
+	}
+	arg.clear();
+	if (sp != string::npos) {
+		size_t start = line.find_first_not_of(' ', sp);
+		if (start != string::npos) {
+			size_t end = line.find_last_not_of(' ');
+			arg = line.substr(start, end - start + 1);
+		}
+	}
+}
+
+// Parses a whole-token positive message number; rejects "1abc", "-2", "".
+bool parseMessageNumber(const string &arg, int &num) {
+	if (arg.empty() || arg.size() > 9) return false;
+	for (size_t i = 0; i < arg.size(); ++i) {
+		if (!isdigit((unsigned char)arg[i])) return false;
+	}
+	num = stoi(arg);
+	return num >= 1;
+}
+
+// RFC 1939 byte-stuffing: a body line starting with '.' is sent as "..".
+void sendMessageText(SOCKET sock, const string &text) {
+	istringstream in(text);
+	string bodyLine;
+	while (getline(in, bodyLine)) {
+		if (!bodyLine.empty() && bodyLine.back() == '\r') {
+			bodyLine.pop_back();
+		}
+		if (!bodyLine.empty() && bodyLine[0] == '.') {
+			bodyLine.insert(bodyLine.begin(), '.');
+		}
+		sendLine(sock, bodyLine);
+	}
+}
+
+} // namespace
+
 MailHandler::MailHandler()
 {
-	// в конструкторе добавляются такие юзера в users, users - private поле в заголовочном
+	// Educational server: accounts and demo mail live in memory.
 	users.push_back(User("wladez", "password"));
 	users.push_back(User("azat", "12345"));
 	users.push_back(User("lera", "1q2w3e"));
-	// FOR TESTS!
-	//и нулевому юзеру добавляются два тестовых письма
-	Letter letter = Letter();
-	letter.addFrom((string)"lera");
-	letter.addSubject((string)"Just for fun");
-	letter.addTo((string)"wladez");
-	letter.addData((string)"Hi! How are you?");
-	users[0].addLetter(letter);
-	Letter letter1 = Letter();
-	letter1.addFrom((string)"azat");
-	letter1.addSubject((string)"Study");
-	letter1.addTo((string)"wladez");
 
-	letter1.addData((string)"You need to get zachot for seti!");
+	Letter letter;
+	letter.addFrom("lera");
+	letter.addSubject("Just for fun");
+	letter.addTo("wladez");
+	letter.addData("Hi! How are you?");
+	users[0].addLetter(letter);
+
+	Letter letter1;
+	letter1.addFrom("azat");
+	letter1.addSubject("Study");
+	letter1.addTo("wladez");
+	letter1.addData("You need to get zachot for seti!");
 	users[0].addLetter(letter1);
 }
 
-DWORD WINAPI MailHandler::clientHandler(LPVOID param){
-	SOCKET client_socket = (SOCKET)param;
-	if (client_socket == INVALID_SOCKET) {
-		printf("error with accept socket. GetLasterror= %d\n", GetLastError());
-		return 1003;
-	}
-	char buf[SIZE_OF_BUF] = "/0";
-	//пересылаем код ответа номер 2 (ready) через клиентский сокет
-	//POP3-коды ответа отпределены в Responses.h как двумерный массив
-	sendLine(client_socket, responses[2]);
-	//значение устанавливается в answer(), по смыслу номер состояния после принятия запроса
-	int status = 1;
-	int aut;
-	User curUs = User();
-	do {
-		aut = authentication(client_socket, status, curUs); //процесс аутентификации клиента
-		if (status == 0) {
-			break;//Проверка на выход
-		}
-	} while (aut < 0);
-	while (recvLine(client_socket, buf, SIZE_OF_BUF)>0){
-		//принимаем сообщения размером buf из клиентского сокета, записываем в buf
-		int len = recvLine(client_socket, buf, SIZE_OF_BUF);
-		if (len > 2){
-			//если что-то пришло, отвечаем
-			string request=string(buf);
-			request.erase(request.size() - 1);
-			if (request.find("STAT") != string::npos){
-				MailHandler::status(client_socket, curUs);
-			}
-			else if (request.find("LIST") != string::npos){
-				getList(client_socket, request, curUs);
-			}
-			else if (request.find("RETR") != string::npos){
-				getMessage(client_socket, request, curUs);
-			}
-			else if (request.find("DELE") != string::npos){
-				deleteMessage(client_socket, request, curUs);
-			}
-			else if (request.find("RSET") != string::npos){
-				reset(client_socket, curUs);
-			}
-			else if (request.find("QUIT") != string::npos){
-				disconnect(client_socket, status, curUs);
-			}
-		}
-		if (status == 0) {
-			break;//Проверка на выход
-		}
-	}
-	closesocket(client_socket);
+thread MailHandler::createThread(SOCKET client_socket) {
+	return thread(&MailHandler::clientSession, this, client_socket);
 }
 
-//процесс аутентификации
-int MailHandler::authentication(SOCKET client_socket, int& status, User& curUser){
-	char buf[SIZE_OF_BUF] = "/0";
-	int len = recvLine(client_socket, buf, SIZE_OF_BUF);
-	cout << buf << endl;  
-	int res=-1;
-	if (len>0){
-		string request = string(buf);
-		string pass;		
-		request.erase(request.size() - 1);
-		cout << "request = " << request << endl;
-		if (request.find("USER") != string::npos){
-			request.erase(request.begin(), request.begin() + 5);
-			int check = checkUser(request);
-			if (check == -1){
-				sendLine(client_socket, responses[4]);//ответ о том, что нет такого пользователя
-				res = -1;
-			}
-			else{
-				sendLine(client_socket, responses[3]);//ответ о том, что есть такой пользователь
-				len = recvLine(client_socket, buf, SIZE_OF_BUF);
-				if (len>0){
-					pass = string(buf);
-					pass.erase(pass.size() - 1);
-					if (pass.find("PASS") != string::npos){
-						pass.erase(pass.begin(), pass.begin() + 5);
-						if (users[check].getPass() == pass){
-							curUser = users[check];
-							curUser.setOnline();
-							string answer = connectedUser(curUser);
-							sendLine(client_socket, answer.c_str());//правильный пароль
-							res = 1;
-						}
-						else {
-							sendLine(client_socket, responses[6]);//неправильный пароль
-							res = -1;
-						}
-					}
-					else if (pass.find("QUIT") != string::npos){
-						status = 0;
-						sendLine(client_socket, responses[16]);
-					}
-				}
-			}
-		}
-		else if (request.find("QUIT") != string::npos){
-			status = 0;
-			sendLine(client_socket, responses[16]);
-		}
-		else if (request.find("CAPA") != string::npos){
-			string ans;
-			ans.append("+OK Capability list follows\r\nUSER\r\n.");
-			sendLine(client_socket, ans.c_str());
-		}
-	}
-	return res;
-}
-
-string MailHandler::connectedUser(User& curUser){
-	int cnt = 0, cap = 0;
-	cnt = curUser.lettersCount();
-	cap = curUser.overallSize();
-	string answer;
-	answer.append(responses[1] + curUser.getName() + responses[17] + to_string(cnt) + responses[18] + to_string(cap) + " octets)\r\n");
-	return answer;
-}
-
-//ответ на команду STAT
-void MailHandler::status(SOCKET client_socket, User& curUser){
-	int cnt = 0, cap = 0;
-	cnt = curUser.lettersCount();
-	cap = curUser.overallSize();
-	string answer;
-	answer.append(responses[1]+to_string(cnt)+" "+to_string(cap)+"\r\n");
-	sendLine(client_socket, answer.c_str());
-}
-
-//ответ на команду LIST
-void MailHandler::getList(SOCKET client_socket, string req, User& curUser){
-	string request = req;
-	string answer;
-	int cnt = 0, cap = 0;
-	cnt = curUser.lettersCount();
-	cap = curUser.overallSize();
-	if (request.length() < 5){
-		answer.append(responses[1] + to_string(cnt) + " messages (" + to_string(cap) + " octets)\r\n");
-		for (int i = 1; i <= cnt; i++){
-			answer.append(to_string(i) + " " + to_string(curUser.letterSize(i)) + "\r\n");
-		}		
-	}
-	else {
-		request.erase(request.begin(), request.begin() + 5);
-		int num = stoi(request);
-		if (num <= cnt && num>0) answer.append(responses[1] + to_string(num) + " " + to_string(curUser.letterSize(num)) + "\r\n");
-		else answer.append(responses[0]); 
-	}
-	sendLine(client_socket, answer.c_str());
-}
-
-//ответ на команду RETR
-void MailHandler::getMessage(SOCKET client_socket, string req, User& curUser){
-	string request = req;
-	string answer;
-	int cnt = 0, cap = 0, num=0;
-	cnt = curUser.lettersCount();
-	if (req.size() > 5){
-		string temp = request.substr(5, 1);
-		try{
-			num = stoi(temp, nullptr);			
-		}
-		catch (invalid_argument){
-			cout << "Error! Invalid argument!" << endl;
-			answer.append("-ERR Invalid argument!");
-		}
-		if (num <= cnt && num > 0) {			
-			Letter let = Letter();
-			let = curUser.getLetter(num);
-			if (let.getMarker() == false){
-				cout << "number is " << num << endl;
-				answer.append(responses[1] + to_string(curUser.letterSize(num)) + " octets\r\n");
-				answer.append("From: " + let.getFrom());
-				answer.append("\r\nTo: " + let.getTo());
-				answer.append("\r\nSubject: " + let.getSubject());
-				answer.append("\r\nData: " + let.getData() + "\r\n.");
-			}
-			else answer.append("-ERR message " + to_string(num) + " was deleted\r\n");			
-		}
-		else answer.append(responses[0]);
-	}
-	else answer.append(responses[0]);
-	sendLine(client_socket, answer.c_str());
-}
-
-//ответ на команду DELE
-void MailHandler::deleteMessage(SOCKET client_socket, string req, User& curUser){
-	string request = req;
-	string answer;
-	int cnt = 0, num = 0;
-	cnt = curUser.lettersCount();
-	string temp = request.substr(5, 1);
-	try{
-		num = stoi(temp, nullptr);
-	}
-	catch (invalid_argument){
-		cout << "Error! Invalid argument!" << endl;
-		answer.append("-ERR Invalid argument!");
-	}
-	if (num <= cnt && num > 0){
-		if (curUser.getLetter(num).getMarker() == false){
-			curUser.deleteLetter(num);
-			answer.append(responses[11] + to_string(num) + " deleted\r\n");
-		}
-		else answer.append("-ERR message " + to_string(num) + " already deleted\r\n");
-	}
-	else answer.append(responses[0]);
-	sendLine(client_socket, answer.c_str());
-}
-
-//сброс установленных флагов на удаление
-void MailHandler::reset(SOCKET client_socket, User& curUser){
-	string answer;
-	int cnt = 0;
-	cnt = curUser.lettersCount();
-	for (int i = 1; i <= cnt; i++){
-		if (curUser.getLetter(i).getMarker() == true){
-			//curUser.getLetter(i).setMarker(false);
-			curUser.recoverLetter(i);
-		}
-	}
-	answer.append(responses[13] + to_string(cnt) + " messages\r\n");
-	sendLine(client_socket, answer.c_str());
-}
-
-//завершение сеанса
-void MailHandler::disconnect(SOCKET client_socket, int& status, User& curUser){
-	string answer;
-	int cnt = 0;
-	cnt = curUser.lettersCount();
-	for (int i = cnt; i > 0; i--){
-		if (curUser.getLetter(i).getMarker() == true){
-			curUser.eraseLetter(i-1);
-		}
-	}
-	int fin = curUser.lettersCount();
-	if (fin == 0) answer.append(responses[20]);
-	else answer.append(responses[19] + to_string(fin) + " messages left)");
-	curUser.setOfline();
-	status = 0;
-	sendLine(client_socket, answer.c_str());
-}
-
-//возвращает индекс первого юзера в массиве, имя которого (возвращаемое getName()) совпало с аргументом, если таких нет, то -1
-int MailHandler::checkUser(const string &name){
-	for (int i = 0; i < users.size(); ++i){
-		if (users[i].getName() == name){
-			return i;
+int MailHandler::findUser(const string &name) const {
+	for (size_t i = 0; i < users.size(); ++i) {
+		if (users[i].getName() == name) {
+			return (int)i;
 		}
 	}
 	return -1;
 }
-thread MailHandler::createThread(LPVOID param){
-	//при использовании из main.cpp param - client_socket оттуда
-	return thread(&MailHandler::clientHandler, this, param);
+
+User &MailHandler::sessionUser(Session &s) {
+	return users[s.userIndex];
+}
+
+void MailHandler::clientSession(SOCKET client_socket) {
+	Session s;
+	s.sock = client_socket;
+	s.state = State::Authorization;
+	s.userIndex = -1;
+
+	sendLine(s.sock, "+OK POP3 server ready");
+
+	string line, verb, arg;
+	while (s.state != State::Update) {
+		int r = recvLine(s.sock, line);
+		if (r <= 0) {
+			// Client vanished without QUIT: abort the session, do NOT
+			// enter UPDATE - marked messages must survive (RFC 1939).
+			break;
+		}
+		if (line.empty()) {
+			sendLine(s.sock, "-ERR empty command");
+			continue;
+		}
+		parseCommand(line, verb, arg);
+
+		lock_guard<mutex> guard(usersMutex);
+		if (verb == "QUIT") {
+			cmdQuit(s);
+		} else if (verb == "NOOP") {
+			cmdNoop(s);
+		} else if (verb == "CAPA") {
+			cmdCapa(s);
+		} else if (verb == "USER") {
+			if (s.state == State::Authorization) cmdUser(s, arg);
+			else sendLine(s.sock, "-ERR command USER is valid only in AUTHORIZATION state");
+		} else if (verb == "PASS") {
+			if (s.state == State::Authorization) cmdPass(s, arg);
+			else sendLine(s.sock, "-ERR command PASS is valid only in AUTHORIZATION state");
+		} else if (verb == "STAT" || verb == "LIST" || verb == "RETR"
+				|| verb == "DELE" || verb == "RSET") {
+			if (s.state != State::Transaction) {
+				sendLine(s.sock, "-ERR command " + verb + " is valid only in TRANSACTION state");
+			} else if (verb == "STAT") {
+				cmdStat(s);
+			} else if (verb == "LIST") {
+				cmdList(s, arg);
+			} else if (verb == "RETR") {
+				cmdRetr(s, arg);
+			} else if (verb == "DELE") {
+				cmdDele(s, arg);
+			} else {
+				cmdRset(s);
+			}
+		} else {
+			sendLine(s.sock, "-ERR unknown command");
+		}
+	}
+
+	// Session ended without a clean UPDATE: release the maildrop lock
+	// and forget the deletion marks.
+	if (s.userIndex >= 0) {
+		lock_guard<mutex> guard(usersMutex);
+		sessionUser(s).mailbox().unmarkAll();
+		sessionUser(s).unlock();
+	}
+
+	shutdown(client_socket, SD_BOTH);
+	closesocket(client_socket);
+	cout << "Client disconnected" << endl;
+}
+
+void MailHandler::cmdUser(Session &s, const string &arg) {
+	if (arg.empty()) {
+		sendLine(s.sock, "-ERR USER requires a mailbox name");
+		return;
+	}
+	if (findUser(arg) == -1) {
+		s.pendingUser.clear();
+		sendLine(s.sock, "-ERR never heard of mailbox " + arg);
+		return;
+	}
+	s.pendingUser = arg;
+	sendLine(s.sock, "+OK " + arg + " is a valid mailbox");
+}
+
+void MailHandler::cmdPass(Session &s, const string &arg) {
+	if (s.pendingUser.empty()) {
+		sendLine(s.sock, "-ERR send USER first");
+		return;
+	}
+	int idx = findUser(s.pendingUser);
+	s.pendingUser.clear();
+	if (idx == -1 || users[idx].getPass() != arg) {
+		sendLine(s.sock, "-ERR invalid password");
+		return;
+	}
+	if (users[idx].isLocked()) {
+		sendLine(s.sock, "-ERR unable to lock maildrop");
+		return;
+	}
+	users[idx].lock();
+	s.userIndex = idx;
+	s.state = State::Transaction;
+	Mailbox &box = users[idx].mailbox();
+	sendLine(s.sock, "+OK " + users[idx].getName() + "'s maildrop has "
+		+ to_string(box.activeCount()) + " messages ("
+		+ to_string(box.activeSize()) + " octets)");
+}
+
+void MailHandler::cmdStat(Session &s) {
+	Mailbox &box = sessionUser(s).mailbox();
+	sendLine(s.sock, "+OK " + to_string(box.activeCount()) + " "
+		+ to_string(box.activeSize()));
+}
+
+void MailHandler::cmdList(Session &s, const string &arg) {
+	Mailbox &box = sessionUser(s).mailbox();
+	if (arg.empty()) {
+		sendLine(s.sock, "+OK " + to_string(box.activeCount()) + " messages ("
+			+ to_string(box.activeSize()) + " octets)");
+		for (int i = 1; i <= box.totalCount(); ++i) {
+			if (!box.isDeleted(i)) {
+				sendLine(s.sock, to_string(i) + " " + to_string(box.letterSize(i)));
+			}
+		}
+		sendLine(s.sock, ".");
+		return;
+	}
+	int num;
+	if (!parseMessageNumber(arg, num) || !box.validNumber(num) || box.isDeleted(num)) {
+		sendLine(s.sock, "-ERR no such message");
+		return;
+	}
+	sendLine(s.sock, "+OK " + to_string(num) + " " + to_string(box.letterSize(num)));
+}
+
+void MailHandler::cmdRetr(Session &s, const string &arg) {
+	Mailbox &box = sessionUser(s).mailbox();
+	int num;
+	if (!parseMessageNumber(arg, num) || !box.validNumber(num)) {
+		sendLine(s.sock, "-ERR no such message");
+		return;
+	}
+	if (box.isDeleted(num)) {
+		sendLine(s.sock, "-ERR message " + to_string(num) + " already deleted");
+		return;
+	}
+	sendLine(s.sock, "+OK " + to_string(box.letterSize(num)) + " octets");
+	sendMessageText(s.sock, box.letter(num).render());
+	sendLine(s.sock, ".");
+}
+
+void MailHandler::cmdDele(Session &s, const string &arg) {
+	Mailbox &box = sessionUser(s).mailbox();
+	int num;
+	if (!parseMessageNumber(arg, num) || !box.validNumber(num)) {
+		sendLine(s.sock, "-ERR no such message");
+		return;
+	}
+	if (box.isDeleted(num)) {
+		sendLine(s.sock, "-ERR message " + to_string(num) + " already deleted");
+		return;
+	}
+	box.markDeleted(num, true);
+	sendLine(s.sock, "+OK message " + to_string(num) + " deleted");
+}
+
+void MailHandler::cmdRset(Session &s) {
+	Mailbox &box = sessionUser(s).mailbox();
+	box.unmarkAll();
+	sendLine(s.sock, "+OK maildrop has " + to_string(box.activeCount())
+		+ " messages (" + to_string(box.activeSize()) + " octets)");
+}
+
+void MailHandler::cmdNoop(Session &s) {
+	sendLine(s.sock, "+OK");
+}
+
+void MailHandler::cmdCapa(Session &s) {
+	sendLine(s.sock, "+OK Capability list follows");
+	sendLine(s.sock, "USER");
+	sendLine(s.sock, "IMPLEMENTATION educational POP3 server");
+	sendLine(s.sock, ".");
+}
+
+void MailHandler::cmdQuit(Session &s) {
+	if (s.state == State::Transaction) {
+		// UPDATE state: physically remove messages marked by DELE
+		// from the shared user list, then release the lock.
+		Mailbox &box = sessionUser(s).mailbox();
+		box.purge();
+		int left = box.totalCount();
+		sessionUser(s).unlock();
+		s.userIndex = -1;
+		if (left == 0) {
+			sendLine(s.sock, "+OK POP3 server signing off (maildrop empty)");
+		} else {
+			sendLine(s.sock, "+OK POP3 server signing off ("
+				+ to_string(left) + " messages left)");
+		}
+	} else {
+		sendLine(s.sock, "+OK POP3 server signing off");
+	}
+	s.state = State::Update;
 }

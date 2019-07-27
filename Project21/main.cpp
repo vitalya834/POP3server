@@ -1,60 +1,95 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <cstdlib>
+#include <cstdio>
 #include <iostream>
+#include <string>
 #include "headers/util.h"
 #include "headers/MailHandler.h"
 using namespace std;
 
-HANDLE mutex;
-HANDLE allhandlers[numCl];
-int numClients = 0;
+static const unsigned short DEFAULT_PORT = 8110;
 
-int main(void) {
+// Accepts "Project21.exe [port]"; falls back to DEFAULT_PORT.
+static bool parsePort(int argc, char *argv[], unsigned short &port) {
+	port = DEFAULT_PORT;
+	if (argc < 2) {
+		return true;
+	}
+	char *end = nullptr;
+	long value = strtol(argv[1], &end, 10);
+	if (end == argv[1] || *end != '\0' || value < 1 || value > 65535) {
+		return false;
+	}
+	port = (unsigned short)value;
+	return true;
+}
+
+int main(int argc, char *argv[]) {
+	unsigned short port;
+	if (!parsePort(argc, argv, port)) {
+		fprintf(stderr, "Usage: %s [port]\n  port: 1-65535, default %u\n",
+			argv[0], (unsigned)DEFAULT_PORT);
+		return 1;
+	}
+
+	WSADATA wsaData;
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+		fprintf(stderr, "WSAStartup failed with error: %d\n", WSAGetLastError());
+		return 1;
+	}
+
+	SOCKET server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (server_socket == INVALID_SOCKET) {
+		fprintf(stderr, "socket() failed with error: %d\n", WSAGetLastError());
+		WSACleanup();
+		return 1;
+	}
+
+	// Lets the server restart immediately without waiting out TIME_WAIT.
+	BOOL reuse = TRUE;
+	setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR,
+		(const char *)&reuse, sizeof(reuse));
+
+	sockaddr_in sin;
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = htonl(INADDR_ANY);
+	sin.sin_port = htons(port);
+	if (::bind(server_socket, (sockaddr *)&sin, sizeof(sin)) == SOCKET_ERROR) {
+		fprintf(stderr, "bind() failed with error: %d\n", WSAGetLastError());
+		closesocket(server_socket);
+		WSACleanup();
+		return 1;
+	}
+
+	if (listen(server_socket, SOMAXCONN) == SOCKET_ERROR) {
+		fprintf(stderr, "listen() failed with error: %d\n", WSAGetLastError());
+		closesocket(server_socket);
+		WSACleanup();
+		return 1;
+	}
+
+	printf("POP3 server listening on port %u\n", (unsigned)port);
+
 	MailHandler mh;
-	//используется для инициализации библиотеки сокетов 
-//	char buf[SIZE_OF_BUF]; //буфер приема и передачи сообщения 
-//	int readbytes; //число прочитанных байт 
-	WSADATA WSStartData; //Инициализация WinSock и проверка его запуска 
-	if (WSAStartup(MAKEWORD(2, 0), &WSStartData) != 0) {
-		printf("WSAStartup failed with error: %d\n", GetLastError());
-		return 100;
-	} //создание сокета 
-	SOCKET server_socket; //по умолчанию используется протокол tcp 
-	printf("Server is started.\nTry to create socket -----------------");
-	if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
-		printf("error with creation socket. GetLasterror= %d\n", GetLastError());
-		return 1000;
+	for (;;) {
+		sockaddr_in from;
+		int fromlen = sizeof(from);
+		SOCKET client_socket = accept(server_socket, (sockaddr *)&from, &fromlen);
+		if (client_socket == INVALID_SOCKET) {
+			int err = WSAGetLastError();
+			if (err == WSAEINTR || err == WSAECONNRESET) {
+				continue; // transient, keep accepting
+			}
+			fprintf(stderr, "accept() failed with error: %d\n", err);
+			break;
+		}
+		cout << "Client connected" << endl;
+		// The session thread owns the client socket and closes it itself.
+		mh.createThread(client_socket).detach();
 	}
-	printf("CHECK\n"); //Привязывание сокета конкретному IP и номеру порта
-	struct sockaddr_in sin;
-	sin.sin_addr.s_addr = INADDR_ANY; // используем все интерфейсы
-	sin.sin_port = htons(120); // используем порт протокола POP3
-	sin.sin_family = AF_INET; printf("Try to bind socket -------------------");
-	if (::bind(server_socket, (struct sockaddr *)&sin, sizeof(sin)) == SOCKET_ERROR) {
-		printf("error with bind socket. GetLasterror= %d\n", GetLastError());
-		return 1001;
-	}
-	printf("CHECK\n"); //делаем сокет прослушиваемым
-	printf("Try to set socket listening ----------");
-	if (listen(server_socket, 5) != 0) {
-		printf("error with listen socket. GetLasterror= %d\n", GetLastError());
-		return 1002;
-	}
-	printf("CHECK\n");
-	printf("Server starts listening\n"); //Ждем клиента. Создаем пустую структуру, которая будет содержать параметры сокета, 
-	//инициирующего соединение 
-	struct sockaddr_in from;
-	int fromlen = sizeof(from); // начинаем "слушать" входящие запросы на подключение
-	int ind = 0;
-	//на каждое подключение к серверному сокету
-	while (SOCKET client_socket = accept(server_socket, (struct sockaddr*)&from, &fromlen)){
-		//создаём новый поток, в котором работает clientHandler() из MailHandler, 
-		//detach отправляет его выполняться независимо от главного потока
-		mh.createThread((LPVOID)client_socket).detach();
-		cout << "Client connect to server\n" <<endl;
-	}
+
 	closesocket(server_socket);
+	WSACleanup();
 	return 0;
 }
